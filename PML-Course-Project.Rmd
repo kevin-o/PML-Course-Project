@@ -1,0 +1,141 @@
+---
+title: "Practical Machine Learning"
+author: "Kevin O"
+date: "September 25, 2015"
+output: html_document
+---
+###Summary
+The purpose of this exercise is to utilize the Weight Lifting Exercises Dataset found [here] (http://groupware.les.inf.puc-rio.br/har#dataset) in building machine learning models that will predict whether a subject is completing an exercise correctly, or making any of four mistakes, based on data collected through body sensing monitors.
+
+###Data and Libraries
+####Load Data and Library from source locations
+```{r, echo = TRUE, warning = FALSE, results = FALSE, message = FALSE}
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(rattle)
+library(rpart)
+library(gridExtra)
+```
+
+
+Download and read in both the training and test datasets.  For both, replace missing values with "NA"
+
+```{r, cache = TRUE, echo = TRUE, warning = FALSE, results = FALSE}
+train.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(train.url, "pml-training.csv", method = "curl")
+train.df <- read.csv("pml-training.csv", header = TRUE, na.strings = c("NA", "NaN", ""))
+
+test.url <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(test.url, "pml-testing.csv", method = "curl")
+test.df <- read.csv("pml-testing.csv", header = TRUE, na.strings = c("NA", "NaN", ""))
+```
+####Tidy Data
+First, I'll clean up the data by eliminating columns that contain a significant number of missing values in the train dataset, first from the train dataset, then from the test dataset.
+
+```{r, echo=TRUE}
+i <- (colSums(is.na(train.df) ))> (.95* nrow (train.df))  ## if more than 95% of the values are missing, eliminate the column
+train.clean.df <- train.df[,!i] ## first from the train dataset
+test.clean.df <- test.df[,c(head(colnames(train.clean.df),-1),tail(colnames(test.df),1))]  ## and then from the test dataset 
+train.clean.df <- subset(train.clean.df, select = - X) # eliminate the X variable
+test.clean.df <- subset(test.clean.df, select = - X)
+```
+This step eliminated 100 columns from the dataset.
+
+###Exploratory Analysis
+Let's create a couple of views of whats in the data.
+```{r}
+p0 <- ggplot(train.clean.df, aes(user_name, fill=classe)) + geom_bar() + labs(title = "Number of Observations")
+p1 <- cloud(magnet_forearm_z ~ magnet_forearm_x + magnet_forearm_y | user_name, data = train.clean.df)
+grid.arrange(p0,p1, ncol =2)
+```
+
+So we have a good number of observation in each classe for each user_name, and some sense of how one set of 3D variables look by individual.
+
+###Cross Validation
+Since there are `r nrow(train.clean.df)` observations in the training dataset, I will set up a cross-validation scheme.    For purposes of cross validation, I am going to use a 4-fold approach. 
+```{r, echo = TRUE, message = FALSE, warning = FALSE}
+set.seed(1776)
+inFolds <- createFolds(train.clean.df$classe, k = 4 )
+str(inFolds)
+```
+
+Now lets set up the four test and training sets
+```{r}
+train1.clean.df <- train.clean.df[inFolds$Fold1,]
+test1.train1 <- train.clean.df[-inFolds$Fold1,]
+
+train2.clean.df <- train.clean.df[inFolds$Fold2,]
+test2.train2 <- train.clean.df[-inFolds$Fold2,]
+
+train3.clean.df <- train.clean.df[inFolds$Fold3,]
+test3.train3 <- train.clean.df[-inFolds$Fold3,]
+
+train4.clean.df <- train.clean.df[inFolds$Fold4,]
+test4.train4 <- train.clean.df[-inFolds$Fold4,]
+```
+
+###Model Building and Testing
+Now I'm ready to explore building and testing different models.  
+
+####Classification Trees
+First, I'll try the rpart method for predicting with trees.
+
+```{r}
+modelFit0 <- train(classe ~ ., method = "rpart", data = train1.clean.df)
+predictions.fit0.train1 <- predict(modelFit0, newdata = train1.clean.df)
+confusionMatrix(predictions.fit0.train1,train1.clean.df$classe)$overall
+```
+
+We can see that the accuracy is only about 50% and so, rather than try this model on the test1 dataset, lets try another approach.
+
+####Random Forest
+Next I'll use a random forest approach.
+```{r, cache = TRUE}
+modelFit1 <- train(classe ~ ., data = train1.clean.df, method = "rf", prox = TRUE)
+modelFit1$finalModel
+```
+
+The model fit here is very good, with an out of sample error rate of only .05%.  Moreover, the class error rates for each class are very good, so this seems to be a good model.  So let's see how the model performs on the first test dataset, and construct the Confusion Matrix.
+
+```{r, message = FALSE, warning = FALSE}
+predictions.fit1.test1 <- predict(modelFit1, newdata = test1.train1)
+confusionMatrix(predictions.fit1.test1, test1.train1$classe)
+```
+
+I'm getting a nearly 99.7% accuracy with very high sensitivity and specificity values for all classes on the test1 dataset.
+
+####Boosting
+
+I'll try another model, this time using boosting, on my second training dataset
+
+```{r, cache = TRUE, message = FALSE, warning = FALSE}
+modelFit2 <- train(classe ~., method = "gbm", data = train2.clean.df, verbose = FALSE)
+modelFit2
+predictions.fit2.test2 <- predict(modelFit2, newdata = test2.train2)
+confusionMatrix(predictions.fit2.test2, test2.train2$classe)
+qplot(predict(modelFit2,test2.train2), classe, data = test2.train2)
+```
+
+This model also delivers excellent results, with also a nearly 99.5% accuracy.  **I will use this model for my results.**
+
+####Out of Sample Error
+I'll apply the boosting model to each of the other two test datasets in my cross-validation samples.  This will provide 3 point estimates for the out of sample error calculation.
+
+```{r, warning = FALSE, message = FALSE}
+predictions.fit2.test3 <- predict(modelFit2, newdata = test3.train3)
+print("Test 3")
+confusionMatrix(predictions.fit2.test3, test3.train3$classe)$overall
+predictions.fit2.test4 <- predict(modelFit2, newdata = test4.train4)
+print("Test 4")
+confusionMatrix(predictions.fit2.test4, test4.train4$classe)$overall
+```
+
+**So I estimate the out of sample error rate to be 1 - average(accuracy rates of the three test samples) = `r 1-sum(confusionMatrix(predictions.fit2.test4, test4.train4$classe)$overall[1],confusionMatrix(predictions.fit2.test3, test3.train3$classe)$overall[1],confusionMatrix(predictions.fit2.test2, test2.train2$classe)$overall[1] )/3 `** !
+
+###Applying the Best Model to the original course project test dataset
+Using the Boosting model, I then predicted the results for the test dataset downloaded from the course website, and submitted my answers.  All were correct!
+```{r}
+predictionsFit2 <- predict(modelFit2, test.clean.df)
+predictionsFit2
+```
